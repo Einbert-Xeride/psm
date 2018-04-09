@@ -123,32 +123,66 @@ delete_package () {
 get_cli_entrypoint () {
     # param: <venv> <package>
     "$1/bin/python" - "$1/lib" "$2" <<EOF
-import sys, json, os
+import sys, os
 from distutils.version import StrictVersion
+try:
+    from configparser import ConfigParser, NoSectionError
+except ImportError:
+    from ConfigParser import SafeConfigParser as ConfigParser, NoSectionError
 
-candidate = {}
+class Metadata(object):
+    def __init__(self, path=None):
+        self.name = None
+        self.version = None
+        if path is None:
+            return
+        file = open(path, 'rb')
+        try:
+            lines = [line.strip().decode('utf-8') for line in file]
+        finally:
+            file.close()
+
+        for line in lines:
+            if self.name is None and line.startswith('Name:'):
+                self.name = line.split(':', 2)[1].strip()
+            if self.version is None and line.startswith('Version:'):
+                self.version = line.split(':', 2)[1].strip()
+            if self.name is not None and self.version is not None:
+                break
+
+candidate = Metadata()
+candidate_path = ''
 
 _, path, pkg = sys.argv
 
 for dirpath, dirnames, filenames in os.walk(path):
     if not dirpath.endswith('.dist-info'):
         continue
-    if 'metadata.json' not in filenames:
+    if 'METADATA' not in filenames:
         continue
-    file = open(os.path.join(dirpath, 'metadata.json'))
-    try:
-        metadata = json.load(file)
-        name = metadata['name']
-        version = metadata['version']
-        if name != pkg:
-            continue
-        if 'version' not in candidate or StrictVersion(version) > StrictVersion(candidate['version']):
-            candidate = metadata
-    finally:
-        file.close()
+    metadata = Metadata(os.path.join(dirpath, 'METADATA'))
+    if metadata.name != pkg:
+        continue
+    if candidate.version is None or StrictVersion(metadata.version) > StrictVersion(candidate.version):
+        candidate = metadata
+        candidate_path = dirpath
 
-for script in sorted(candidate.get('extensions', {}).get('python.commands', {}).get('wrap_console', {})):
-    print(script)
+if candidate_path == '':
+    sys.exit(1)
+
+entry_points_path = os.path.join(candidate_path, 'entry_points.txt')
+if not os.path.isfile(entry_points_path):
+    sys.exit(0)
+
+config = ConfigParser()
+config.read(entry_points_path)
+try:
+    options = config.options('console_scripts')
+except NoSectionError:
+    options = []
+
+for option in options:
+    print(option)
 EOF
 }
 
