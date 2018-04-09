@@ -1,0 +1,327 @@
+#!/bin/sh
+
+_newline='
+'
+
+PSM_VERSION='0.0.1'
+
+if [ -z "$PSM_VIRTUALENV" ]; then
+    PSM_VIRTUALENV=virtualenv
+fi
+
+if ! command -v $PSM_VIRTUALENV 2>&1 >/dev/null; then
+    echo 'virtualenv not found or is not executable' >&2
+    echo "Current virtualenv: $PSM_VIRTUALENV" >&2
+fi
+
+if [ -z "$PSM_ROOT" ]; then
+    PSM_ROOT="$HOME/.local/share/psm"
+fi
+
+if [ -z "$PSM_INSTALL_PATH" ]; then
+    PSM_INSTALL_PATH="$HOME/.local/bin"
+fi
+
+mkdir -p "$PSM_ROOT" || exit 1
+
+package_required () {
+    if [ -z "$1" ]; then
+        echo 'Package name required' >&2
+        exit 1
+    fi
+}
+
+param_limit () {
+    if [ $# -gt $(($1 + 1)) ]; then
+        shift
+        echo "Too many parameters: $*" >&2
+        exit 1
+    fi
+}
+
+delete_directory () {
+    case "$1" in
+        /|/bin|/etc|/home|/sbin|/usr|/var|/Applications|/Library|/System|"$HOME")
+            echo "This script attempted to delete entire $1, prevented"
+    esac
+    echo "Deleting directory $1" >&2
+    rm -rf "$1"
+    return $?
+}
+
+package_exists () {
+    # param: <package>
+    if [ -z "$1" ]; then
+        return 1
+    fi
+    [ -d "$PSM_ROOT/$1" ]
+    return $?
+}
+
+check_package () {
+    # param: <package>
+    if ! package_exists "$1"; then
+        return 1
+    fi
+    [ -f "$PSM_ROOT/$1/bin/activate" -a \
+        -f "$PSM_ROOT/$1/bin/pip" -a \
+        -x "$PSM_ROOT/$1/bin/pip" -a \
+        -f "$PSM_ROOT/$1/bin/python" -a \
+        -x "$PSM_ROOT/$1/bin/python" ]
+    return $?
+}
+
+assert_package () {
+    # param: <package>
+    if ! check_package "$1"; then
+        echo "$1 not installed or corrupted" >&2
+        exit 1
+    fi
+}
+
+install_package () {
+    # param: <package>
+    if package_exists "$1"; then
+        echo "Package $1 already exists" >&2
+        return 1
+    fi
+
+    (
+        set -e
+
+        if [ -n "$PSM_PYTHON" ]; then
+            $PSM_VIRTUALENV -p $PSM_PYTHON "$PSM_ROOT/$1"
+        else
+            $PSM_VIRTUALENV "$PSM_ROOT/$1"
+        fi
+
+        if ! check_package "$1"; then
+            echo "Installation of $1 somehow failed" >&2
+            exit 1
+        fi
+
+        source "$PSM_ROOT/$1/bin/activate"
+
+        pip install "$1"
+    )
+
+    return $?
+}
+
+delete_package () {
+    # param: <package>
+    if ! package_exists "$1"; then
+        echo "Package $1 not exists" >&2
+        return 1
+    fi
+
+    delete_directory "$PSM_ROOT/$1"
+
+    return $?
+}
+
+get_cli_entrypoint () {
+    # param: <venv> <package>
+    "$1/bin/python" - "$1/lib" "$2" <<EOF
+import sys, json, os
+from distutils.version import StrictVersion
+
+candidate = {}
+
+_, path, pkg = sys.argv
+
+for dirpath, dirnames, filenames in os.walk(path):
+    if not dirpath.endswith('.dist-info'):
+        continue
+    if 'metadata.json' not in filenames:
+        continue
+    file = open(os.path.join(dirpath, 'metadata.json'))
+    try:
+        metadata = json.load(file)
+        name = metadata['name']
+        version = metadata['version']
+        if name != pkg:
+            continue
+        if 'version' not in candidate or StrictVersion(version) > StrictVersion(candidate['version']):
+            candidate = metadata
+    finally:
+        file.close()
+
+for script in sorted(candidate.get('extensions', {}).get('python.commands', {}).get('wrap_console', {})):
+    print(script)
+EOF
+}
+
+
+link_package () {
+    # param: <package>
+    assert_package "$1"
+
+    (
+        set -e
+        IFS="$_newline"
+        mkdir -p "$PSM_INSTALL_PATH"
+        for cmd in $(get_cli_entrypoint "$PSM_ROOT/$1" "$1"); do
+            if [ -x "$PSM_ROOT/$1/bin/$cmd" ]; then
+                ln -sv "$PSM_ROOT/$1/bin/$cmd" "$PSM_INSTALL_PATH/$cmd"
+            fi
+        done
+    )
+
+    return $?
+}
+
+unlink_package () {
+    # param: <package>
+    assert_package "$1"
+
+    (
+        set -e
+        IFS="$_newline"
+        [ -d "$PSM_INSTALL_PATH" ] || exit 0
+        for cmd in $(find "$PSM_INSTALL_PATH" -maxdepth 1 -type l); do
+            linkto="$(readlink "$cmd")"
+            case "$linkto" in
+                "$PSM_ROOT/$1/bin/"*)
+                    rm -v "$cmd"
+                    ;;
+            esac
+        done
+    )
+
+    return $?
+}
+
+list_packages () {
+    (
+        cd "$PSM_ROOT"
+        find . -mindepth 1 -maxdepth 1 -type d | sed -e 's|^\./||' -e '/^\./d' | sort
+    )
+    return $?
+}
+
+upgrade_package () {
+    # param: <package>
+    assert_package "$1"
+
+    (
+        set -e
+        source "$PSM_ROOT/$1/bin/activate"
+        pip freeze --local | pip install -r /dev/stdin --upgrade
+    )
+
+    return $?
+}
+
+command_help () {
+    param_limit 0 $@
+    cat <<EOF
+Usage: $(basename $0) <command> [PARAMS...]
+
+  Python Script Manager v$PSM_VERSION
+
+Commands:
+    add <package>   Add script from <package>
+    rm <package>    Remove scripts of <package>
+    up [package]    Update <package> or all packages if <package> not given
+    ls              List all installed packages
+    root            Show root directory of PSM
+    path <package>  Show path of a specific package
+    exec <package> [subcommand...]
+                    Run specific command in virtualenv of the package
+    help            Show this message
+
+Environment variables:
+    PSM_ROOT (Default: ~/.local/share/psm, Now: ${PSM_ROOT})
+        Where to create virtualenvs for packages
+    PSM_VIRTUALENV (Default: virtualenv, Now: ${PSM_VIRTUALENV})
+        What virtualenv command to use to create virtualenvs
+    PSM_PYTHON (Default: (virtualenv defaults), Now: ${PSM_PYTHON:-(virtualenv defaults)})
+        What Python interpreter to use for virtualenv
+    PSM_INSTALL_PATH (Default: ~/.local/bin, Now: ${PSM_INSTALL_PATH})
+        Where to link scripts to
+EOF
+    exit 0
+}
+
+command_add () {
+    param_limit 1 $@
+    package_required $@
+    install_package "$1" && link_package "$1"
+    exit $?
+}
+
+command_rm () {
+    param_limit 1 $@
+    package_required $@
+    unlink_package "$1" && delete_package "$1"
+    exit $?
+}
+
+command_up () {
+    param_limit 1 $@
+    if [ -n "$1" ]; then
+        upgrade_package "$1"
+        exit $?
+    fi
+
+    LFS="$_newline"
+    for pkg in $(list_packages); do
+        echo ">>>>>> $pkg"
+        if ! upgrade_package "$pkg"; then
+            echo "Upgrading $pkg failed"
+        fi
+        echo "<<<<<< $pkg"
+    done
+
+    exit $?
+}
+
+command_ls () {
+    param_limit 0 $@
+    list_packages
+    exit $?
+}
+
+command_root () {
+    param_limit 0 $@
+    echo "$PSM_ROOT"
+    exit $?
+}
+
+command_path () {
+    param_limit 1 $@
+    package_required $@
+    assert_package "$1"
+    echo "$PSM_ROOT/$1"
+    exit $?
+}
+
+command_exec () {
+    package_required $@
+    assert_package $1
+    pkg="$1"
+    shift
+    (
+        source "$PSM_ROOT/$pkg/bin/activate"
+        command $@
+    )
+    exit $?
+}
+
+command=$1
+shift
+
+case $command in
+    add|rm|up|ls|root|path|exec)
+        command_$command $@
+        exit $?
+        ;;
+    help|'')
+        command_help $@
+        ;;
+    *)
+        echo "No such command: $command" >&2
+        command_help >&2
+        ;;
+esac
