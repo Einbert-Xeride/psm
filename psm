@@ -288,7 +288,16 @@ command_add () {
 command_rm () {
     param_limit 1 $@
     package_required $@
-    unlink_package "$1" && delete_package "$1"
+    if check_package "$1"; then
+        unlink_package "$1" && delete_package "$1"
+    else
+        read -n1 -p "Package $1 may be corrupted, delete its directory only? (Y/n)" _answer
+        if [ "$answer" = 'n' -o "$answer" = 'N' ]; then
+            exit -1
+        else
+            delete_package "$1"
+        fi
+    fi
     exit $?
 }
 
