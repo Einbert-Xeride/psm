@@ -5,8 +5,6 @@ Python Script Manager
 A simple tool like `pipsi`, but in POSIX shell.
 
 ```
-Usage: psm <command> [PARAMS...]
-
 Commands:
     add <package>   Add script from <package>
     rm <package>    Remove scripts of <package>
@@ -16,5 +14,7 @@ Commands:
     path <package>  Show path of a specific package
     exec <package> [subcommand...]
                     Run specific command in virtualenv of the package
+    pip <package> [params...]
+                    Run pip in virtualenv of the package
     help            Show this message
 ```

@@ -263,6 +263,8 @@ Commands:
     path <package>  Show path of a specific package
     exec <package> [subcommand...]
                     Run specific command in virtualenv of the package
+    pip <package> [params...]
+                    Run pip in virtualenv of the package
     help            Show this message
 
 Environment variables:
@@ -352,11 +354,18 @@ command_exec () {
     exit $?
 }
 
+command_pip () {
+    pkg="$1"
+    shift
+    command_exec "$pkg" pip $@
+    exit $?
+}
+
 command=$1
 shift
 
 case $command in
-    add|rm|up|ls|root|path|exec)
+    add|rm|up|ls|root|path|exec|pip)
         command_$command $@
         exit $?
         ;;
