@@ -241,9 +241,7 @@ upgrade_package () {
     (
         set -e
         source "$PSM_ROOT/$1/bin/activate"
-        # This method may not always work, if some packages have special version requirements.
-        # e.g.: https://github.com/chengyumeng/spider163
-        pip freeze --local | awk -F'==' '{print $1;}' | pip install -r /dev/stdin --upgrade
+        pip install --upgrade "$1"
     )
 
     return $?
